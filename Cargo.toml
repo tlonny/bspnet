@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.34.2", features = ["bytemuck"] }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+nom = "8.0"
 pollster = "0.4"
 wgpu = "30.0.1"
 winit = "0.30"

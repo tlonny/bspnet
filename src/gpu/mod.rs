@@ -3,3 +3,6 @@ pub mod buffer;
 pub mod pipeline;
 pub mod render_pass;
 pub mod texture;
+
+#[cfg(test)]
+mod test;

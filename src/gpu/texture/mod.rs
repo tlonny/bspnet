@@ -1,8 +1,12 @@
+mod accumulation;
+mod array;
 mod color;
 mod depth;
+mod revealage;
 
+pub use accumulation::Accumulation;
 pub use color::Color;
 pub use depth::Depth;
+pub use revealage::Revealage;
 
-#[cfg(test)]
-mod test;
+pub use array::Array;

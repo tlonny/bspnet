@@ -1,40 +1,40 @@
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
-use bspnet::{
-    bsp,
-    gpu::{
-        bind_group,
-        buffer::{Index, uniform::Camera, vertex},
-        pipeline,
-        texture::{Color, Depth},
-    },
-    level,
-};
-use glam::{Vec2, Vec3};
+use bspnet::{bsp, gpu, level};
 use winit::{dpi::LogicalSize, event_loop::ActiveEventLoop, window::Window};
 
-use super::{App, Graphics, camera};
+use super::{App, Graphics};
 
 const WINDOW_WIDTH: f64 = 1280.0;
 const WINDOW_HEIGHT: f64 = 720.0;
-const WORLD_SHADER: &str = include_str!("../../shader/world.wgsl");
-const BSP_PATH: &str = concat!(
+const BSP_FILE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/maps/librequake/lq_e0m1-notex.bsp"
+    "/assets/maps/librequake/lq_e0m1.bsp"
 );
-const TEXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/textures/librequake");
-// The bundled map's player spawn plus Quake's 22-unit eye height.
-const CAMERA_POSITION: Vec3 = Vec3::new(512.0, 2048.0, 326.0);
-// Quake yaw 15 degrees becomes 75 degrees for our +Y-forward camera.
-const CAMERA_ROTATION: Vec2 = Vec2::new(0.0, 75_f32.to_radians());
+const LIT_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/maps/librequake/lq_e0m1.lit"
+);
+const PALETTE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/maps/librequake/palette.lmp"
+);
+const COMPOSITE_SHADER: &str = include_str!("../../shader/composite.wgsl");
+const TINT_SHADER: &str = include_str!("../../shader/tint.wgsl");
+const LIQUID_SHADER: &str = include_str!("../../shader/liquid.wgsl");
+const SKY_SHADER: &str = include_str!("../../shader/sky.wgsl");
+const SOLID_SHADER: &str = include_str!("../../shader/solid.wgsl");
 
 impl App {
-    /// Load and triangulate the BSP, then create the window and upload its mesh.
+    /// Load the fixture, create GPU resources, and initialize world rendering.
     pub fn init(&mut self, event_loop: &ActiveEventLoop) {
-        let bytes = std::fs::read(BSP_PATH).expect("could not read bundled BSP");
-        let bsp = bsp::Data::decode(&bytes).expect("could not decode bundled BSP");
-        let mesh = level::triangulate(&bsp).expect("could not triangulate BSP");
-        self.camera = camera::Camera::new(CAMERA_POSITION, CAMERA_ROTATION);
+        let bsp = bsp::Data::decode(&fs::read(BSP_FILE).expect("could not read LibreQuake BSP"))
+            .expect("could not decode LibreQuake BSP");
+        let lit = fs::read(LIT_FILE).expect("could not read LibreQuake .lit");
+        let palette = fs::read(PALETTE_FILE).expect("could not read LibreQuake palette.lmp");
+        let samples = bsp::sidecar::lit::decode(&lit).expect("could not decode LibreQuake .lit");
+        let palette =
+            bsp::sidecar::lmp::decode(&palette).expect("could not decode LibreQuake palette");
         let attributes = Window::default_attributes()
             .with_title(&self.window_title)
             .with_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT));
@@ -48,34 +48,6 @@ impl App {
         .expect("no compatible graphics adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .expect("could not create graphics device");
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let textures = bsp
-            .textures
-            .iter()
-            .map(|texture| {
-                let path = std::path::Path::new(TEXTURE_PATH).join(format!("{}.png", texture.name));
-                let pixels = image::open(&path)
-                    .unwrap_or_else(|error| {
-                        panic!("could not load texture {}: {error}", path.display())
-                    })
-                    .into_rgba8();
-                assert_eq!(
-                    glam::UVec2::new(pixels.width(), pixels.height()),
-                    texture.dimensions,
-                    "texture dimensions disagree with BSP for {}",
-                    texture.name
-                );
-                let color = Color::create(&device, texture.dimensions);
-                color.write(&queue, pixels.as_raw());
-                bind_group::Color::create(&device, &color, &sampler)
-            })
-            .collect();
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -84,23 +56,65 @@ impl App {
             .get_capabilities(&adapter)
             .formats
             .into_iter()
-            .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(config.format);
+            .find(|format| {
+                matches!(
+                    format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
+            .expect("surface has no supported non-sRGB colour format");
         surface.configure(&device, &config);
-        let depth = Depth::create(&device, config.width, config.height);
-        let pipeline = pipeline::World::create(&device, config.format, WORLD_SHADER);
-        let camera = Camera::create(&device);
-        let camera_binding = bind_group::Camera::create(&device, &camera);
-        let vertices = vertex::World::create(&device, mesh.vertices.len());
-        vertices.write(&queue, &mesh.vertices);
-        let mut indices = Index::create(&device, mesh.indices.len());
-        indices.write(&queue, &mesh.indices);
+        let depth = gpu::texture::Depth::create(&device, config.width, config.height);
+        let camera_buffer = gpu::buffer::uniform::Camera::create(&device);
+        let camera_binding = gpu::bind_group::Camera::create(&device, &camera_buffer);
+        let pipeline = gpu::pipeline::solid::opaque::create(&device, config.format, SOLID_SHADER);
+        let sky_pipeline = gpu::pipeline::sky::create(&device, config.format, SKY_SHADER);
+        let liquid_pipeline =
+            gpu::pipeline::liquid::opaque::create(&device, config.format, LIQUID_SHADER);
+        let composite_pipeline =
+            gpu::pipeline::composite::create(&device, config.format, COMPOSITE_SHADER);
+        let transparent_liquid_pipeline =
+            gpu::pipeline::liquid::transparent::create(&device, LIQUID_SHADER);
+        let tint_pipeline = gpu::pipeline::tint::create(&device, config.format, TINT_SHADER);
+        let accumulation = gpu::texture::Accumulation::create(&device, config.width, config.height);
+        let revealage = gpu::texture::Revealage::create(&device, config.width, config.height);
+        let composite_binding =
+            gpu::bind_group::Composite::create(&device, &accumulation, &revealage);
+        let tint_buffer = gpu::buffer::uniform::Tint::create(&device);
+        let tint_binding = gpu::bind_group::Tint::create(&device, &tint_buffer);
+        let properties_data = level::properties::build(&bsp);
+        let properties_buffer = gpu::buffer::uniform::Properties::create(&device);
+        properties_buffer.write(&queue, properties_data.water);
+        let properties_binding = gpu::bind_group::Properties::create(&device, &properties_buffer);
+        let slime_properties_buffer = gpu::buffer::uniform::Properties::create(&device);
+        slime_properties_buffer.write(&queue, properties_data.slime);
+        let slime_properties_binding =
+            gpu::bind_group::Properties::create(&device, &slime_properties_buffer);
+        let mut lightmap = level::lightmap::Builder::create(samples);
+        let mut mesh = level::mesh::worldspawn::Mesh::build(&bsp, &mut lightmap, &device, &queue);
+        let lightmaps = lightmap.upload(&device, &queue);
+        let textures = bsp
+            .textures()
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                source
+                    .as_ref()
+                    .map(|_| level::texture::build(&bsp, index, palette, &device, &queue))
+            })
+            .collect();
+        let leaf = bsp
+            .leaf_at(self.camera.position().to_array())
+            .expect("invalid player-start leaf");
+        mesh.set_leaf(&queue, leaf).unwrap();
         println!(
-            "Loaded lq_e0m1-notex.bsp: {} vertices, {} triangles",
-            mesh.vertices.len(),
-            mesh.indices.len() / 3
+            "Loaded LibreQuake: {} faces, {} leaves; camera leaf {leaf}",
+            bsp.faces().len(),
+            bsp.leaves().len()
         );
-        println!("Click to capture the mouse. WASD to fly, mouse to look, Escape to quit.");
+        println!(
+            "WASD to fly; Space/Ctrl up/down; Shift faster; click to toggle mouse look; Esc to quit."
+        );
         self.graphics = Some(Graphics {
             window,
             instance,
@@ -109,16 +123,30 @@ impl App {
             queue,
             config,
             depth,
-            pipeline,
-            camera,
+            camera_buffer,
             camera_binding,
-            vertices,
-            indices,
+            pipeline,
+            sky_pipeline,
+            liquid_pipeline,
+            transparent_liquid_pipeline,
+            composite_pipeline,
+            tint_pipeline,
+            accumulation,
+            revealage,
+            composite_binding,
+            tint_buffer,
+            tint_binding,
+            properties_data,
+            properties_buffer,
+            properties_binding,
+            slime_properties_buffer,
+            slime_properties_binding,
+            started: std::time::Instant::now(),
+            bsp,
+            mesh,
+            lightmaps,
             textures,
-            ranges: mesh.ranges,
         });
-        self.bsp = Some(bsp);
-        self.leaf = None;
         self.resize(size.width, size.height);
     }
 }

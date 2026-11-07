@@ -9,8 +9,8 @@
 - Define items before they are used when reading a file from top to bottom. If function A calls function B in the same file, define B above A; apply the same ordering to methods and test helpers.
 - Give each helper function a terse comment above its definition describing its purpose. Helpers should perform meaningful work; prefer inlining trivial one-line helpers that see little reuse.
 - Prefer named, file-local constants declared at the top of the file over inline literal values, especially property keys and classname values such as `"classname"` and `"worldspawn"`.
-- Keep tests in a separate `test.rs` file alongside the module they test, such as `src/map/test.rs`.
-- Do not define tests inline in implementation files. Include the separate test module with `#[cfg(test)] mod test;`.
+- Group separate test files under each top-level module’s `test/` directory, with `test/mod.rs` as the entry point.
+- Do not define tests inline in implementation files. Keep tests of private helpers logically nested via `#[path]` when necessary; do not widen production visibility solely for tests.
 
 ## Visibility
 

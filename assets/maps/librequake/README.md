@@ -10,8 +10,9 @@ single-player level, rather than a minimal test room.
 - Binary archive: [full.zip](https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip).
 - BSP and LIT: extracted unchanged from `full/id1/pak0.pak`, entries
   `maps/lq_e0m1.bsp` and `maps/lq_e0m1.lit`.
-- PNG colors were expanded using `gfx/palette.lmp` from the same PAK.
-  The palette is not bundled; the RGB PNGs do not need it at runtime.
+- `palette.lmp`: copied unchanged from the release tag's
+  [`lq1/gfx/palette.lmp`](https://github.com/lavenderdotpet/LibreQuake/blob/v0.09-beta/lq1/gfx/palette.lmp).
+  This is the shared palette used to expand the BSP's embedded texture indices.
 - MAP and CONF: copied from the release tag's
   [source map](https://github.com/lavenderdotpet/LibreQuake/blob/v0.09-beta/lq1/maps/src/e0/lq_e0m1.map)
   and [build configuration](https://github.com/lavenderdotpet/LibreQuake/blob/v0.09-beta/lq1/maps/src/-buildconfigs-/e0/lq_e0m1.conf).
@@ -51,42 +52,32 @@ Player start: `(512, 2048, 304)`, yaw `15` degrees in Quake coordinates.
 
 ## Using this fixture
 
-The app loads **`lq_e0m1-notex.bsp`**, a derived BSP29 copy. The original
-`lq_e0m1.bsp` remains unchanged for reference. This fixture was converted once;
-new levels will be authored with external textures from the outset.
+Run `cargo run` from the project. The viewer loads `lq_e0m1.bsp`,
+`lq_e0m1.lit`, and `palette.lmp` from this directory using paths relative to
+Cargo's manifest directory. It requires no installed Quake game files.
 
-All 108 textures' largest mip levels were extracted into RGB PNGs in
-`assets/textures/librequake/`, expanding colors through the original release
-palette. Using these PNGs does not require a palette file.
-Filenames preserve the original texture names, including special prefixes.
-The derived texture lump retains the original texture order, names, and
-dimensions, with all four mip offsets zero, matching ericw's `qbsp -notex`
-placeholder representation. Other original mip levels are not exported.
+The BSP's four indexed texture mip levels are expanded through the palette
+and uploaded as sRGB color textures. External RGB lighting is packed on the
+standard sixteen-unit lightmap grid into a linear texture array. All four
+light style slots are treated as enabled. The original BSPX extension is ignored.
 
-The derived BSP has an empty grayscale lighting lump and no embedded RGB lighting.
-It retains the original BSPX `BRUSHLIST` collision extension unchanged, updating
-its file offset after repacking. The original release fixture also contains this
-extension; our current parser ignores it.
-`lq_e0m1-notex.lit` is an unchanged copy of the original RGB sidecar. Face
-lightmap offsets and styles remain intact; they still describe the original
-sample layout even though the grayscale samples have been removed. The rest
-of the standard lumps, including geometry, texture mappings, entities, and VIS,
-are preserved byte for byte; file offsets are recalculated when packing.
+The app keeps the BSP for camera-to-leaf lookup. The mesh precomputes each
+leaf's visible world-face indices and texture batches, and uploads the selected
+leaf's indices to one reusable GPU buffer. The window title shows the current
+leaf. Clockwise Quake face winding is converted to the pipeline's
+counterclockwise triangle order.
 
-The PNGs and derived BSP retain the LibreQuake licensing and attribution
-documented above in `COPYING` and `CREDITS`. The current renderer still uses
-depth shading; PNG loading and texturing have not yet been implemented.
+Controls: WASD to fly, Space / Left Ctrl to move up/down, Left Shift for faster
+movement, left click to toggle mouse look, and Escape to quit. Movement is
+noclip. The camera starts at the player spawn with a 22-unit eye offset.
 
-For the original, embedded-texture fixture:
+This is a world-geometry viewer: brush entities such as doors and platforms,
+models, sprites, sounds, gameplay, animated light styles, and special sky/liquid
+rendering remain separate work. Sky and liquid faces currently use their ordinary
+textures. No distance-based brightness effect is applied.
 
-The original BSP retains indexed textures; decoding them requires the original
-release palette supplied separately. It also contains baked lightmaps and leaf
-PVS. Load the `.lit` sidecar for RGB
-lighting, or use the BSP's grayscale lighting initially. Other models are
-brush entities such as platforms and doors; rendering the complete level
-will eventually require their entity transforms too.
+The existing PNG exports under `assets/textures/librequake/` and the old
+`lq_e0m1-notex.lit` copy are not used by this viewer.
 
-The converted BSP and RGB PNGs make world rendering independent of an
-installed copy of Quake or a palette file. Models, sprites, sounds, and gameplay assets referenced
-by entities are not included. Rebuilding the MAP also requires the texture WADs
-from LibreQuake's developer archive; the MAP is included for inspection.
+The BSP, sidecars, and PNG exports retain the LibreQuake licensing and attribution
+in `COPYING` and `CREDITS`; keep those notices when redistributing the assets.

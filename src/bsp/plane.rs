@@ -1,31 +1,34 @@
 use std::io::{Error, ErrorKind, Result};
 
-use glam::Vec3;
+const RECORD_SIZE: usize = 20;
 
-const PLANE_SIZE: usize = 20;
-
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Plane {
-    pub normal: Vec3,
+    pub normal: [f32; 3],
     pub distance: f32,
 }
 
-/// Decode splitting planes, ignoring the axial optimization hint.
+/// Decode BSP29 plane equations, ignoring the unused classification field.
 pub fn decode(bytes: &[u8]) -> Result<Vec<Plane>> {
-    if bytes.len() % PLANE_SIZE != 0 {
+    let (records, remainder) = bytes.as_chunks::<RECORD_SIZE>();
+    if !remainder.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidData,
             "planes lump length must be a multiple of 20",
         ));
     }
-    Ok(bytes
-        .chunks_exact(PLANE_SIZE)
-        .map(|plane| Plane {
-            normal: Vec3::from_array(std::array::from_fn(|axis| {
+    records
+        .iter()
+        .map(|record| {
+            let normal = std::array::from_fn(|axis| {
                 let start = axis * 4;
-                f32::from_le_bytes(plane[start..start + 4].try_into().unwrap())
-            })),
-            distance: f32::from_le_bytes(plane[12..16].try_into().unwrap()),
+                f32::from_le_bytes(record[start..start + 4].try_into().unwrap())
+            });
+            let distance = f32::from_le_bytes(record[12..16].try_into().unwrap());
+            if normal.iter().any(|value| !value.is_finite()) || !distance.is_finite() {
+                return Err(Error::new(ErrorKind::InvalidData, "non-finite plane"));
+            }
+            Ok(Plane { normal, distance })
         })
-        .collect())
+        .collect()
 }

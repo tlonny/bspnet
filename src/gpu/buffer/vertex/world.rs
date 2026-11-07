@@ -1,15 +1,33 @@
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3};
 
 const BUFFER_LABEL: &str = "World vertices";
 const POSITION_LOCATION: u32 = 0;
 const UV_LOCATION: u32 = 1;
+const LIGHT_UV_LOCATIONS: [u32; 4] = [2, 3, 4, 5];
+const LIGHTMAP_LOCATION: u32 = 6;
+const UV_SIZE: wgpu::BufferAddress = std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress;
+
+/// Array-layer sentinel for a light style with no packed samples.
+pub const MISSING_LIGHTMAP: u32 = u32::MAX;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Data {
-    pub position: Vec3,
-    pub uv: Vec2,
+    pub position: [f32; 3],
+    pub uv: [f32; 2],
+    pub light_uv: [[f32; 2]; 4],
+    pub lightmap_layers: [u32; 4],
+}
+
+impl Default for Data {
+    fn default() -> Self {
+        Self {
+            position: [0.; 3],
+            uv: [0.; 2],
+            light_uv: [[0.; 2]; 4],
+            lightmap_layers: [MISSING_LIGHTMAP; 4],
+        }
+    }
 }
 
 /// A fixed-capacity GPU buffer of textured world vertices.
@@ -40,7 +58,7 @@ impl World {
         &self.buffer
     }
 
-    /// Describe the position and UV attributes.
+    /// Describe positions, base-texture UVs, and all four lightmap UV sets.
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Data>() as wgpu::BufferAddress,
@@ -55,6 +73,33 @@ impl World {
                     format: wgpu::VertexFormat::Float32x2,
                     offset: std::mem::offset_of!(Data, uv) as wgpu::BufferAddress,
                     shader_location: UV_LOCATION,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: std::mem::offset_of!(Data, light_uv) as wgpu::BufferAddress,
+                    shader_location: LIGHT_UV_LOCATIONS[0],
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: std::mem::offset_of!(Data, light_uv) as wgpu::BufferAddress + UV_SIZE,
+                    shader_location: LIGHT_UV_LOCATIONS[1],
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: std::mem::offset_of!(Data, light_uv) as wgpu::BufferAddress
+                        + UV_SIZE * 2,
+                    shader_location: LIGHT_UV_LOCATIONS[2],
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: std::mem::offset_of!(Data, light_uv) as wgpu::BufferAddress
+                        + UV_SIZE * 3,
+                    shader_location: LIGHT_UV_LOCATIONS[3],
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32x4,
+                    offset: std::mem::offset_of!(Data, lightmap_layers) as wgpu::BufferAddress,
+                    shader_location: LIGHTMAP_LOCATION,
                 },
             ],
         }

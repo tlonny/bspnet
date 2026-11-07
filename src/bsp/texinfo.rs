@@ -1,36 +1,64 @@
 use std::io::{Error, ErrorKind, Result};
 
-use glam::Vec4;
+use super::texture::Texture;
 
-const TEXINFO_SIZE: usize = 40;
+const RECORD_SIZE: usize = 40;
+const COMPONENT_SIZE: usize = 4;
+const SPECIAL: i32 = 1;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Texinfo {
-    /// S and T mapping rows: xyz is the axis, w is the pixel offset.
-    pub axes: [Vec4; 2],
-    /// Index into the BSP's textures array.
-    pub texture: i32,
+    /// S and T projection rows: xyz is the axis, w is the pixel offset.
+    pub axes: [[f32; 4]; 2],
+    /// Validated index of a present entry in the texture lump.
+    pub texture: usize,
+    /// TEX_SPECIAL: no lightmap and larger compiler surface subdivisions.
+    pub special: bool,
 }
 
-/// Decode texture mapping rows and texture indices, skipping the flags field.
-pub fn decode(bytes: &[u8]) -> Result<Vec<Texinfo>> {
-    if bytes.len() % TEXINFO_SIZE != 0 {
+/// Decode texture projections and validate their references to external texture headers.
+pub fn decode(bytes: &[u8], textures: &[Option<Texture>]) -> Result<Vec<Texinfo>> {
+    let (records, remainder) = bytes.as_chunks::<RECORD_SIZE>();
+    if !remainder.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidData,
             "texinfo lump length must be a multiple of 40",
         ));
     }
-
-    Ok(bytes
-        .chunks_exact(TEXINFO_SIZE)
-        .map(|info| Texinfo {
-            axes: std::array::from_fn(|axis| {
-                Vec4::from_array(std::array::from_fn(|component| {
-                    let start = axis * 16 + component * 4;
-                    f32::from_le_bytes(info[start..start + 4].try_into().unwrap())
-                }))
-            }),
-            texture: i32::from_le_bytes(info[32..36].try_into().unwrap()),
+    records
+        .iter()
+        .map(|record| {
+            let axes = std::array::from_fn(|row| {
+                std::array::from_fn(|component| {
+                    let start = (row * 4 + component) * COMPONENT_SIZE;
+                    f32::from_le_bytes(record[start..start + COMPONENT_SIZE].try_into().unwrap())
+                })
+            });
+            let texture = usize::try_from(i32::from_le_bytes(record[32..36].try_into().unwrap()))
+                .map_err(|_| {
+                Error::new(ErrorKind::InvalidData, "negative texinfo texture index")
+            })?;
+            if textures.get(texture).and_then(Option::as_ref).is_none() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "texinfo references missing texture",
+                ));
+            }
+            let special = match i32::from_le_bytes(record[36..40].try_into().unwrap()) {
+                0 => false,
+                SPECIAL => true,
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "unsupported texinfo flags",
+                    ));
+                }
+            };
+            Ok(Texinfo {
+                axes,
+                texture,
+                special,
+            })
         })
-        .collect())
+        .collect()
 }

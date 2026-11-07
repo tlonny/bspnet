@@ -1,22 +1,11 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
-use glam::Vec2;
-
-use bspnet::bsp;
-use bspnet::gpu::{
-    bind_group,
-    buffer::{Index, uniform::Camera, vertex},
-    pipeline,
-    texture::Depth,
-};
-use bspnet::level::TextureRange;
+use bspnet::{bsp, gpu, level};
+use glam::{Vec2, Vec3};
 use winit::{
     application::ApplicationHandler,
-    event::{DeviceEvent, DeviceId, ElementState, MouseButton, StartCause, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event::{DeviceEvent, DeviceId, MouseButton, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
@@ -25,9 +14,12 @@ mod camera;
 mod init;
 mod render;
 mod resize;
-mod update;
 
-const SIM_STEP: Duration = Duration::from_millis(10);
+#[cfg(test)]
+mod test;
+
+const PLAYER_START: Vec3 = Vec3::new(512.0, 2048.0, 326.0);
+const PLAYER_ROTATION: Vec2 = Vec2::new(0.0, 75f32.to_radians());
 
 struct Graphics {
     window: Arc<Window>,
@@ -36,62 +28,71 @@ struct Graphics {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    depth: Depth,
-    pipeline: pipeline::World,
-    camera: Camera,
-    camera_binding: bind_group::Camera,
-    vertices: vertex::World,
-    indices: Index,
-    textures: Vec<bind_group::Color>,
-    ranges: Vec<TextureRange>,
+    depth: gpu::texture::Depth,
+    camera_buffer: gpu::buffer::uniform::Camera,
+    camera_binding: gpu::bind_group::Camera,
+    pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
+    liquid_pipeline: wgpu::RenderPipeline,
+    transparent_liquid_pipeline: wgpu::RenderPipeline,
+    composite_pipeline: wgpu::RenderPipeline,
+    tint_pipeline: wgpu::RenderPipeline,
+    accumulation: gpu::texture::Accumulation,
+    revealage: gpu::texture::Revealage,
+    composite_binding: gpu::bind_group::Composite,
+    tint_buffer: gpu::buffer::uniform::Tint,
+    tint_binding: gpu::bind_group::Tint,
+    properties_data: level::properties::Data,
+    properties_buffer: gpu::buffer::uniform::Properties,
+    properties_binding: gpu::bind_group::Properties,
+    slime_properties_buffer: gpu::buffer::uniform::Properties,
+    slime_properties_binding: gpu::bind_group::Properties,
+    started: Instant,
+    bsp: bsp::Data,
+    mesh: level::mesh::worldspawn::Mesh,
+    lightmaps: gpu::bind_group::Array,
+    textures: Vec<Option<level::texture::Texture>>,
 }
 
 pub struct App {
-    last_update: Instant,
     window_title: String,
     graphics: Option<Graphics>,
     camera: camera::Camera,
-    captured: bool,
-    bsp: Option<bsp::Data>,
-    leaf: Option<usize>,
+    cursor_captured: bool,
+    last_frame: Instant,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
-            last_update: Instant::now(),
             window_title: String::new(),
             graphics: None,
-            camera: camera::Camera::default(),
-            captured: false,
-            bsp: None,
-            leaf: None,
+            camera: camera::Camera::new(PLAYER_START, PLAYER_ROTATION),
+            cursor_captured: false,
+            last_frame: Instant::now(),
         }
     }
 
-    // Capture or release the cursor and clear pending camera input.
-    fn capture_mouse(&mut self, captured: bool) {
+    // Capture relative mouse input while the user is looking around the level.
+    fn capture_cursor(&mut self, capture: bool) {
         let Some(graphics) = &self.graphics else {
             return;
         };
-        if captured {
-            graphics
-                .window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| graphics.window.set_cursor_grab(CursorGrabMode::Confined))
-                .expect("could not capture the mouse");
+        let mode = if capture {
+            CursorGrabMode::Locked
         } else {
-            graphics
-                .window
-                .set_cursor_grab(CursorGrabMode::None)
-                .unwrap();
+            CursorGrabMode::None
+        };
+        if let Err(error) = graphics.window.set_cursor_grab(mode) {
+            eprintln!("Could not change cursor capture: {error}");
+            return;
         }
-        graphics.window.set_cursor_visible(!captured);
-        self.captured = captured;
+        graphics.window.set_cursor_visible(!capture);
+        self.cursor_captured = capture;
         self.camera.clear_input();
     }
 
-    /// Run the window event loop and fixed-step camera updates.
+    /// Run the LibreQuake viewer's window event loop.
     pub fn run(mut self, title: &str) {
         self.window_title = title.to_owned();
         let event_loop = EventLoop::new().unwrap();
@@ -104,18 +105,14 @@ impl ApplicationHandler for App {
         if self.graphics.is_none() {
             self.init(event_loop);
         }
-        self.last_update = Instant::now();
+        self.last_frame = Instant::now();
         self.graphics.as_ref().unwrap().window.request_redraw();
     }
 
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if let StartCause::ResumeTimeReached { .. } = cause {
-            while self.last_update.elapsed() >= SIM_STEP {
-                self.update();
-                self.last_update += SIM_STEP;
-            }
-            if let Some(graphics) = &self.graphics {
-                graphics.window.request_redraw();
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if self.cursor_captured {
+            if let DeviceEvent::MouseMotion { delta: (x, y) } = event {
+                self.camera.mouse_motion(Vec2::new(x as f32, y as f32));
             }
         }
     }
@@ -125,40 +122,32 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => self.render(),
             WindowEvent::Resized(size) => self.resize(size.width, size.height),
-            WindowEvent::Focused(false) => self.capture_mouse(false),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.capture_mouse(true),
+            WindowEvent::Focused(false) => {
+                self.capture_cursor(false);
+                self.camera.clear_input();
+            }
             WindowEvent::Occluded(false) => {
                 if let Some(graphics) = &self.graphics {
                     graphics.window.request_redraw();
                 }
             }
+            WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                state,
+                ..
+            } if state.is_pressed() => {
+                self.capture_cursor(!self.cursor_captured);
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     if key == KeyCode::Escape && event.state.is_pressed() {
                         event_loop.exit();
-                    } else if self.captured {
+                    } else {
                         self.camera.key(key, event.state.is_pressed());
                     }
                 }
             }
             _ => {}
         }
-    }
-
-    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        if self.captured
-            && let DeviceEvent::MouseMotion { delta } = event
-        {
-            self.camera
-                .mouse_motion(Vec2::new(delta.0 as f32, delta.1 as f32));
-        }
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.last_update + SIM_STEP));
     }
 }

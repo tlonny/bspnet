@@ -1,17 +1,27 @@
 use std::io::{Error, ErrorKind, Result};
 
-const MARKSURFACE_SIZE: usize = 2;
+const RECORD_SIZE: usize = 2;
 
-/// Decode leaf face references as unsigned little-endian face indices.
-pub fn decode(bytes: &[u8]) -> Result<Vec<u16>> {
-    if bytes.len() % MARKSURFACE_SIZE != 0 {
+/// Decode marksurfaces as face indices, preserving order and shared references.
+pub fn decode(bytes: &[u8], face_count: usize) -> Result<Vec<usize>> {
+    let (records, remainder) = bytes.as_chunks::<RECORD_SIZE>();
+    if !remainder.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidData,
             "marksurfaces lump length must be a multiple of 2",
         ));
     }
-    Ok(bytes
-        .chunks_exact(MARKSURFACE_SIZE)
-        .map(|entry| u16::from_le_bytes(entry.try_into().unwrap()))
-        .collect())
+    records
+        .iter()
+        .map(|record| {
+            let face = usize::from(u16::from_le_bytes(*record));
+            if face >= face_count {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "marksurface references missing face",
+                ));
+            }
+            Ok(face)
+        })
+        .collect()
 }
