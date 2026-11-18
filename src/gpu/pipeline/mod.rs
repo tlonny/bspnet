@@ -3,3 +3,6 @@ pub mod liquid;
 pub mod sky;
 pub mod solid;
 pub mod tint;
+
+#[cfg(test)]
+mod test;

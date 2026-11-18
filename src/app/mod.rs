@@ -1,22 +1,19 @@
 use std::{sync::Arc, time::Instant};
 
-use bspnet::{bsp, gpu, level};
+use bspnet::{bsp, camera, gpu, level};
 use glam::{Vec2, Vec3};
 use winit::{
     application::ApplicationHandler,
-    event::{DeviceEvent, DeviceId, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event::{DeviceEvent, DeviceId, MouseButton, StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
 
-mod camera;
 mod init;
 mod render;
 mod resize;
-
-#[cfg(test)]
-mod test;
+mod update;
 
 const PLAYER_START: Vec3 = Vec3::new(512.0, 2048.0, 326.0);
 const PLAYER_ROTATION: Vec2 = Vec2::new(0.0, 75f32.to_radians());
@@ -32,6 +29,8 @@ struct Graphics {
     camera_buffer: gpu::buffer::uniform::Camera,
     camera_binding: gpu::bind_group::Camera,
     pipeline: wgpu::RenderPipeline,
+    transparent_solid_pipeline: wgpu::RenderPipeline,
+    entity_opacity: Vec<Option<wgpu::BindGroup>>,
     sky_pipeline: wgpu::RenderPipeline,
     liquid_pipeline: wgpu::RenderPipeline,
     transparent_liquid_pipeline: wgpu::RenderPipeline,
@@ -49,7 +48,9 @@ struct Graphics {
     slime_properties_binding: gpu::bind_group::Properties,
     started: Instant,
     bsp: bsp::Data,
+    states: Vec<level::state::State>,
     mesh: level::mesh::worldspawn::Mesh,
+    entity_meshes: Vec<Option<level::mesh::entity::Mesh>>,
     lightmaps: gpu::bind_group::Array,
     textures: Vec<Option<level::texture::Texture>>,
 }
@@ -59,7 +60,7 @@ pub struct App {
     graphics: Option<Graphics>,
     camera: camera::Camera,
     cursor_captured: bool,
-    last_frame: Instant,
+    last_update: Instant,
 }
 
 impl App {
@@ -69,7 +70,7 @@ impl App {
             graphics: None,
             camera: camera::Camera::new(PLAYER_START, PLAYER_ROTATION),
             cursor_captured: false,
-            last_frame: Instant::now(),
+            last_update: Instant::now(),
         }
     }
 
@@ -105,8 +106,16 @@ impl ApplicationHandler for App {
         if self.graphics.is_none() {
             self.init(event_loop);
         }
-        self.last_frame = Instant::now();
+        self.last_update = Instant::now();
         self.graphics.as_ref().unwrap().window.request_redraw();
+    }
+
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: StartCause) {
+        self.advance(Instant::now());
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.last_update + level::STEP));
     }
 
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {

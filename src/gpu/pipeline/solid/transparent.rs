@@ -1,3 +1,5 @@
+use wgpu::util::DeviceExt;
+
 use crate::gpu::{
     bind_group,
     buffer::vertex,
@@ -7,6 +9,30 @@ use crate::gpu::{
 const LABEL: &str = "Solid transparent";
 const VERTEX_ENTRY: &str = "vs_main";
 const FRAGMENT_ENTRY: &str = "fs_transparent";
+
+const OPACITY_GROUP: u32 = 3;
+const OPACITY_BINDING: u32 = 0;
+
+/// Upload immutable opacity for one translucent brush.
+pub fn opacity_binding(
+    device: &wgpu::Device,
+    pipeline: &wgpu::RenderPipeline,
+    alpha: f32,
+) -> wgpu::BindGroup {
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(LABEL),
+        contents: bytemuck::bytes_of(&alpha),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(LABEL),
+        layout: &pipeline.get_bind_group_layout(OPACITY_GROUP),
+        entries: &[wgpu::BindGroupEntry {
+            binding: OPACITY_BINDING,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
+}
 
 /// Create the transparent solid pipeline with lighting and OIT accumulation.
 pub fn create(device: &wgpu::Device, source: &str) -> wgpu::RenderPipeline {
@@ -20,7 +46,7 @@ pub fn create(device: &wgpu::Device, source: &str) -> wgpu::RenderPipeline {
     let opacity_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(LABEL),
         entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
+            binding: OPACITY_BINDING,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,

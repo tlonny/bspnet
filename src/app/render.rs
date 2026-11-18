@@ -1,11 +1,59 @@
-use super::App;
-use bspnet::{bsp::Contents, gpu};
-use std::time::Instant;
+use super::{App, Graphics};
+use bspnet::{bsp::Contents, gpu, level::state::State};
 
-const MAX_FRAME_SECONDS: f32 = 0.1;
+impl Graphics {
+    /// Draw each brush with the pipeline matching its opacity.
+    fn draw_brushes<'a>(&'a self, pass: &mut gpu::render_pass::World<'a>, transparent: bool) {
+        for ((entity, opacity), state) in self
+            .bsp
+            .entities()
+            .iter()
+            .zip(&self.entity_opacity)
+            .zip(&self.states)
+        {
+            let Some((model, alpha)) = entity.brush() else {
+                continue;
+            };
+            if alpha == 0.0 || opacity.is_some() != transparent {
+                continue;
+            }
+            let pipeline = if transparent {
+                &self.transparent_solid_pipeline
+            } else {
+                &self.pipeline
+            };
+            let mesh = self.entity_meshes[model].as_ref().unwrap();
+            let pressed = matches!(state, State::Button(button) if button.is_pressed());
+            for batch in mesh.batches() {
+                let texture_id = if pressed {
+                    self.bsp
+                        .texture_families()
+                        .get(&batch.texture_id)
+                        .and_then(|family| family.alternate.as_ref())
+                        .and_then(|frames| frames.first())
+                        .copied()
+                        .unwrap_or(batch.texture_id)
+                } else {
+                    batch.texture_id
+                };
+                let texture = self.textures[texture_id].as_ref().unwrap();
+                pass.draw(
+                    pipeline,
+                    &self.camera_binding,
+                    mesh.vertices(),
+                    mesh.indices(),
+                    texture.binding(),
+                    self.lightmaps.bind_group(),
+                    opacity.as_ref(),
+                    batch.indices.clone(),
+                );
+            }
+        }
+    }
+}
 
 impl App {
-    /// Update the camera and PVS selection, draw the world, and present the frame.
+    /// Upload the current view, select its PVS, draw the world, and present the frame.
     pub fn render(&mut self) {
         let Some(graphics) = &mut self.graphics else {
             return;
@@ -41,13 +89,6 @@ impl App {
             wgpu::CurrentSurfaceTexture::Occluded => return,
             wgpu::CurrentSurfaceTexture::Validation => panic!("invalid surface frame"),
         };
-        let now = Instant::now();
-        let seconds = now
-            .duration_since(self.last_frame)
-            .as_secs_f32()
-            .min(MAX_FRAME_SECONDS);
-        self.last_frame = now;
-        self.camera.update(seconds);
         let elapsed = graphics.started.elapsed().as_secs_f32();
         graphics.properties_data.water.seconds = elapsed;
         graphics.properties_data.slime.seconds = elapsed;
@@ -100,6 +141,7 @@ impl App {
                 &graphics.slime_properties_binding,
                 graphics.properties_data.slime.liquid_alpha,
             );
+            graphics.draw_brushes(&mut pass, false);
         }
         {
             let mut pass = gpu::render_pass::World::transparent(
@@ -119,6 +161,7 @@ impl App {
                 &graphics.slime_properties_binding,
                 graphics.properties_data.slime.liquid_alpha,
             );
+            graphics.draw_brushes(&mut pass, true);
         }
         {
             let mut pass = gpu::render_pass::Composite::create(&mut encoder, &color);

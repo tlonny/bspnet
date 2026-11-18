@@ -30,6 +30,11 @@ impl App {
     pub fn init(&mut self, event_loop: &ActiveEventLoop) {
         let bsp = bsp::Data::decode(&fs::read(BSP_FILE).expect("could not read LibreQuake BSP"))
             .expect("could not decode LibreQuake BSP");
+        let states = bsp
+            .entities()
+            .iter()
+            .map(level::state::State::build)
+            .collect();
         let lit = fs::read(LIT_FILE).expect("could not read LibreQuake .lit");
         let palette = fs::read(PALETTE_FILE).expect("could not read LibreQuake palette.lmp");
         let samples = bsp::sidecar::lit::decode(&lit).expect("could not decode LibreQuake .lit");
@@ -68,6 +73,8 @@ impl App {
         let camera_buffer = gpu::buffer::uniform::Camera::create(&device);
         let camera_binding = gpu::bind_group::Camera::create(&device, &camera_buffer);
         let pipeline = gpu::pipeline::solid::opaque::create(&device, config.format, SOLID_SHADER);
+        let transparent_solid_pipeline =
+            gpu::pipeline::solid::transparent::create(&device, SOLID_SHADER);
         let sky_pipeline = gpu::pipeline::sky::create(&device, config.format, SKY_SHADER);
         let liquid_pipeline =
             gpu::pipeline::liquid::opaque::create(&device, config.format, LIQUID_SHADER);
@@ -92,15 +99,46 @@ impl App {
             gpu::bind_group::Properties::create(&device, &slime_properties_buffer);
         let mut lightmap = level::lightmap::Builder::create(samples);
         let mut mesh = level::mesh::worldspawn::Mesh::build(&bsp, &mut lightmap, &device, &queue);
+        let mut entity_meshes: Vec<_> = (0..bsp.models().len()).map(|_| None).collect();
+        let entity_opacity = bsp
+            .entities()
+            .iter()
+            .map(|entity| {
+                let (_, alpha) = entity.brush()?;
+                (alpha > 0.0 && alpha < 1.0).then(|| {
+                    gpu::pipeline::solid::transparent::opacity_binding(
+                        &device,
+                        &transparent_solid_pipeline,
+                        alpha,
+                    )
+                })
+            })
+            .collect();
+        for (model, alpha) in bsp.entities().iter().filter_map(bsp::Entity::brush) {
+            if alpha == 0.0 {
+                continue;
+            }
+            if entity_meshes[model].is_none() {
+                entity_meshes[model] = Some(
+                    level::mesh::entity::Mesh::build(&bsp, model, &mut lightmap, &device, &queue)
+                        .expect("could not build entity mesh"),
+                );
+            }
+        }
         let lightmaps = lightmap.upload(&device, &queue);
         let textures = bsp
             .textures()
             .iter()
-            .enumerate()
-            .map(|(index, source)| {
-                source
-                    .as_ref()
-                    .map(|_| level::texture::build(&bsp, index, palette, &device, &queue))
+            .map(|source| {
+                source.as_ref().map(|source| match source {
+                    bsp::texture::Texture::Indexed(texture) => {
+                        level::texture::from_indexed(texture, palette, &device, &queue)
+                    }
+                    bsp::texture::Texture::External(texture) => panic!(
+                        "external texture '{}' requires an image loader",
+                        texture.name
+                    ),
+                })
             })
             .collect();
         let leaf = bsp
@@ -126,6 +164,8 @@ impl App {
             camera_buffer,
             camera_binding,
             pipeline,
+            transparent_solid_pipeline,
+            entity_opacity,
             sky_pipeline,
             liquid_pipeline,
             transparent_liquid_pipeline,
@@ -143,7 +183,9 @@ impl App {
             slime_properties_binding,
             started: std::time::Instant::now(),
             bsp,
+            states,
             mesh,
+            entity_meshes,
             lightmaps,
             textures,
         });

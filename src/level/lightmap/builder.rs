@@ -46,12 +46,8 @@ struct Projection {
 // Resolve a usable lightmap projection and sample offset.
 fn project(bsp: &Bsp, index: usize) -> Option<Projection> {
     let face = &bsp.faces()[index];
-    let mapping = &bsp.texinfo()[face.texinfo];
     let lighting_offset = face.lighting_offset?;
-    if mapping.special {
-        return None;
-    }
-    let axes = mapping.axes;
+    let axes = bsp.texinfo()[face.texinfo].axes;
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
     for position in bsp.positions(index) {

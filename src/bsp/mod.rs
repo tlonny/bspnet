@@ -21,7 +21,10 @@ mod visibility;
 pub use clipnode::{Child as ClipChild, Clipnode};
 pub use contents::Contents;
 pub use edge::Edge;
-pub use entity::{Entity, Worldspawn};
+pub use entity::{
+    Angle, Button, Door, Entity, Portal, PortalGeometry, PortalValidation, StaticBrush,
+    TriggerMultiple, TriggerOnce, TriggerRelay, Worldspawn,
+};
 pub use face::Face;
 pub use leaf::Leaf;
 pub use model::{ClipRoot, Model, RenderRoot};
@@ -51,6 +54,7 @@ pub struct Data {
     visibility: Visibility,
     texinfo: Vec<Texinfo>,
     textures: Vec<Option<Texture>>,
+    texture_families: texture::Families,
     leaves: Vec<Leaf>,
 }
 
@@ -161,9 +165,14 @@ impl Data {
         &self.visibility
     }
 
-    /// Borrow indexed textures in directory order, preserving missing entries.
+    /// Borrow textures in directory order, preserving missing entries.
     pub fn textures(&self) -> &[Option<Texture>] {
         &self.textures
+    }
+
+    /// Borrow the mapping from present texture IDs to frame families.
+    pub fn texture_families(&self) -> &texture::Families {
+        &self.texture_families
     }
 
     /// Borrow texture projection records in their original lump order.
@@ -174,12 +183,11 @@ impl Data {
     /// Decode the supported lumps of a Quake BSP29 file, requiring world model zero.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let directory = directory::decode(bytes)?;
-        let entities = entity::decode(&bytes[directory.entities])?;
         let planes = plane::decode(&bytes[directory.planes])?;
         let vertices = vertex::decode(&bytes[directory.vertices])?;
         let edges = edge::decode(&bytes[directory.edges], vertices.len())?;
         let surfedges = surfedge::decode(&bytes[directory.surfedges], edges.len())?;
-        let textures = texture::decode(&bytes[directory.textures])?;
+        let (textures, texture_families) = texture::decode(&bytes[directory.textures])?;
         let texinfo = texinfo::decode(&bytes[directory.texinfo], &textures)?;
         let faces = face::decode(
             &bytes[directory.faces],
@@ -212,8 +220,8 @@ impl Data {
         for model in &models {
             model.validate_leaves(leaves.len())?;
         }
-        Ok(Self {
-            entities,
+        let mut data = Self {
+            entities: Vec::new(),
             planes,
             marksurfaces,
             vertices,
@@ -226,7 +234,10 @@ impl Data {
             visibility,
             texinfo,
             textures,
+            texture_families,
             leaves,
-        })
+        };
+        data.entities = entity::decode(&bytes[directory.entities], &data)?;
+        Ok(data)
     }
 }

@@ -96,7 +96,7 @@ impl<'a> World<'a> {
         indices: &'a Index,
         texture: &'a bind_group::Color,
         material: &'a wgpu::BindGroup,
-        properties: Option<&'a bind_group::Properties>,
+        properties: Option<&'a wgpu::BindGroup>,
         range: Range<u32>,
     ) {
         if indices.range().is_empty() || range.is_empty() {
@@ -107,8 +107,7 @@ impl<'a> World<'a> {
             .set_bind_group(CAMERA_GROUP, camera.bind_group(), &[]);
         self.pass.set_bind_group(MATERIAL_GROUP, material, &[]);
         if let Some(properties) = properties {
-            self.pass
-                .set_bind_group(PROPERTIES_GROUP, properties.bind_group(), &[]);
+            self.pass.set_bind_group(PROPERTIES_GROUP, properties, &[]);
         }
         self.pass
             .set_vertex_buffer(VERTEX_SLOT, vertices.buffer().slice(..));
